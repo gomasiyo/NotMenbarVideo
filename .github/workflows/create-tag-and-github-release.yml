@@ -1,0 +1,154 @@
+# .github/workflows/create-tag-and-github-release.yml
+name: Create Tag and GitHub Release from Release Branch
+
+on:
+  push:
+    branches:
+      - 'release/**' # release/v1.0.0 のようなブランチがプッシュされたときにトリガー
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # タグの作成とプッシュ、リリース作成に必要
+      pull-requests: write # リリースノート生成のために必要
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.ref }} # プッシュされたリリースブランチのHEADをチェックアウト
+
+    - name: Get version from branch name
+      id: get_version
+      run: |
+        VERSION=$(echo '${{ github.ref_name }}' | cut -d'/' -f2) # 例: 'release/1.0.0' から '1.0.0' を抽出
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+        echo "Detected version for release: $VERSION"
+
+    - name: Configure Git
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+    - name: Create and push Tag on Release branch
+      id: create_tag
+      run: |
+        TAG_NAME="v${{ steps.get_version.outputs.VERSION }}"
+        echo "Attempting to create tag: $TAG_NAME on ${{ github.ref_name }}"
+        
+        # タグが既に存在するかチェック (releaseブランチのコミットに対して)
+        # git tag -l $TAG_NAME を使っても良いが、リポジトリ全体ではなく特定コミットに関連づける
+        if git tag --points-at HEAD | grep -q $TAG_NAME; then
+          echo "Tag $TAG_NAME already exists on this commit. Skipping tag creation."
+          echo "TAG_CREATED=false" >> $GITHUB_OUTPUT
+        else
+          git tag $TAG_NAME
+          git push origin $TAG_NAME
+          echo "Tag $TAG_NAME created and pushed from ${{ github.ref_name }}."
+          echo "TAG_CREATED=true" >> $GITHUB_OUTPUT
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Install dependencies (if package.json is used)
+      # タグが新しく作成された場合にのみビルドを実行 (無限ループ防止)
+      if: steps.create_tag.outputs.TAG_CREATED == 'true' && hashFiles('package.json')
+      run: npm ci
+
+    - name: Build and Package Extension
+      # タグが新しく作成された場合にのみビルドを実行
+      if: steps.create_tag.outputs.TAG_CREATED == 'true'
+      run: |
+        PROJECT_NAME="${{ github.event.repository.name }}"
+        VERSION="${{ steps.get_version.outputs.VERSION }}"
+        ZIP_FILE_NAME="${PROJECT_NAME}_${VERSION}.zip"
+        RELEASE_DIR="build_release"
+        
+        mkdir -p $RELEASE_DIR
+        cp -r src/* $RELEASE_DIR/ 
+        
+        # もし npm run build などでビルドが必要ならここに追記
+        # (例: npm run build -- --output-path $RELEASE_DIR)
+        
+        cd $RELEASE_DIR
+        zip -r "../$ZIP_FILE_NAME" .
+
+    - name: Generate Release Notes
+      id: release_notes
+      # タグが新しく作成された場合にのみリリースノートを生成
+      if: steps.create_tag.outputs.TAG_CREATED == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { owner, repo } = context.repo;
+          const currentTag = process.env.GITHUB_REF_NAME; // release/1.0.0
+          const currentVersion = currentTag.substring(currentTag.lastIndexOf('/') + 1); // 1.0.0
+
+          // 最新のタグ (今回のタグの直前のタグ) を取得するため
+          const tags = await github.rest.repos.listTags({
+              owner,
+              repo,
+              per_page: 2
+          });
+          const previousTag = tags.data.length > 1 ? tags.data[1].name : null;
+
+          let releaseNotes = `# Release ${currentVersion}\n\n`;
+          releaseNotes += '## What\'s Changed\n\n';
+
+          // 現在のタグと直前のタグ間のコミットを比較してPRを特定
+          let compareRange = previousTag ? `${previousTag}...${currentTag}` : currentTag;
+          
+          const { data: compare } = await github.rest.repos.compareCommits({
+              owner,
+              repo,
+              base: previousTag || tags.data[0].commit.sha, // 最初のリリースなら、タグが指すコミットの親または最初
+              head: currentTag,
+          });
+
+          const commits = compare.commits || [];
+          
+          let prTitles = new Set();
+          for (const commit of commits) {
+              const prMatch = commit.commit.message.match(/Merge pull request #(\d+) from/);
+              if (prMatch) {
+                  const prNumber = prMatch[1];
+                  try {
+                      const { data: pr } = await github.rest.pulls.get({
+                          owner,
+                          repo,
+                          pull_number: prNumber
+                      });
+                      prTitles.add(`- ${pr.title} (#${pr.number})`);
+                  } catch (error) {
+                      console.log(`Could not fetch PR #${prNumber}: ${error.message}`);
+                  }
+              } else {
+                  // PRに紐付かない通常のコミットも追加したい場合
+                  // prTitles.add(`- ${commit.commit.message.split('\n')[0]}`);
+              }
+          }
+
+          if (prTitles.size > 0) {
+              prTitles.forEach(title => {
+                  releaseNotes += `${title}\n`;
+              });
+          } else {
+              releaseNotes += "- No pull requests directly associated with this release found, or direct commits.\n";
+          }
+          
+          core.setOutput('release_body', releaseNotes);
+
+    - name: Create GitHub Release
+      # タグが新しく作成された場合にのみリリースを作成
+      if: steps.create_tag.outputs.TAG_CREATED == 'true'
+      uses: softprops/action-gh-release@v2
+      with:
+        files: "${{ github.event.repository.name }}_${{ steps.get_version.outputs.VERSION }}.zip"
+        name: Release ${{ steps.get_version.outputs.VERSION }}
+        tag_name: v${{ steps.get_version.outputs.VERSION }} # タグ名には 'v' を付ける
+        body: ${{ steps.release_notes.outputs.release_body }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

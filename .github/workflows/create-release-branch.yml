@@ -1,0 +1,56 @@
+# .github/workflows/create-release-branch.yml
+name: Sync Release Branch from Main
+
+on:
+  push:
+    branches:
+      - main # mainブランチへのプッシュ（PRマージを含む）をトリガー
+
+jobs:
+  create-or-sync-branch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # ブランチの作成とプッシュに必要
+
+    steps:
+    - name: Checkout main branch
+      uses: actions/checkout@v4
+      with:
+        ref: main # mainブランチをチェックアウト
+
+    - name: Get version from package.json
+      id: get_version
+      run: |
+        VERSION=$(node -p "require('./package.json').version")
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+        echo "Detected version: $VERSION"
+      # package.jsonがない場合、またはNode.jsが使えない場合は別の方法を検討
+
+    - name: Configure Git
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+    - name: Create and push Release branch
+      run: |
+        BRANCH_NAME="release/${{ steps.get_version.outputs.VERSION }}"
+        echo "Attempting to create/sync branch: $BRANCH_NAME"
+
+        # release/{version} ブランチが存在するか確認
+        if git show-ref --verify --quiet refs/heads/$BRANCH_NAME; then
+          echo "Branch $BRANCH_NAME already exists. Syncing latest main changes."
+          git checkout $BRANCH_NAME
+          git reset --hard origin/main # mainの最新内容に強制同期
+        else
+          echo "Creating new branch $BRANCH_NAME"
+          git checkout -b $BRANCH_NAME origin/main # mainから新しいブランチを作成
+        fi
+        
+        git push origin $BRANCH_NAME --force # 強制プッシュ (注意: 履歴を上書きします)
+        echo "RELEASE_BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_OUTPUT
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    # このステップでタグを作成するトリガーを、次のワークフローに渡すために何か出力するか、
+    # あるいは次のワークフローを release ブランチへのプッシュで直接トリガーする。
+    # ここでは、次のワークフローが release ブランチへのプッシュをトリガーするようにします。

@@ -1,0 +1,25 @@
+{
+  "name": "chrome_youtube_not_menbar_videos",
+  "version": "0.0.0",
+  "description": "Youtubeのメンバー限定動画をリストから削除する",
+  "keywords": [
+    "youtube",
+    "chrome",
+    "extensions"
+  ],
+  "homepage": "https://github.com/gomasiyo/NotMenbarVideo#readme",
+  "bugs": {
+    "url": "https://github.com/gomasiyo/NotMenbarVideo/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gomasiyo/NotMenbarVideo.git"
+  },
+  "license": "ISC",
+  "author": "Goma::NanoHa",
+  "type": "commonjs",
+  "main": "src/content.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
+}
