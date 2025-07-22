@@ -26,12 +26,23 @@ jobs:
         echo "Detected version: $VERSION"
       # package.jsonがない場合、またはNode.jsが使えない場合は別の方法を検討
 
+    - name: Log version check
+      run: |
+        VERSION="${{ steps.get_version.outputs.VERSION }}"
+        if [[ $VERSION == 0.* ]]; then
+          echo "Version starts with 0 ($VERSION). Skipping release branch creation."
+        else
+          echo "Version is $VERSION. Proceeding with release branch creation."
+        fi
+
     - name: Configure Git
+      if: "!startsWith(steps.get_version.outputs.VERSION, '0.')"
       run: |
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
 
     - name: Create and push Release branch
+      if: "!startsWith(steps.get_version.outputs.VERSION, '0.')"
       run: |
         BRANCH_NAME="release/${{ steps.get_version.outputs.VERSION }}"
         echo "Attempting to create/sync branch: $BRANCH_NAME"
@@ -45,7 +56,7 @@ jobs:
           echo "Creating new branch $BRANCH_NAME"
           git checkout -b $BRANCH_NAME origin/main # mainから新しいブランチを作成
         fi
-        
+
         git push origin $BRANCH_NAME --force # 強制プッシュ (注意: 履歴を上書きします)
         echo "RELEASE_BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_OUTPUT
       env:
